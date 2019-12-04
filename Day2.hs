@@ -24,10 +24,13 @@ doSteps :: ([Int], Int) -> ([Int], Int)
 doSteps (a, pos) = if (a !! pos == 99) then (a, pos) else (doSteps (doStep (a, pos)))
 
 
+replaceParams :: [Int] -> Int -> Int -> [Int]
+replaceParams a b c = (replaceAt (replaceAt a 2 c) 1 b)
+
 -- Code for Part 2.
 
 attempt :: ([Int], Int) -> Int -> Int -> Bool
-attempt (a, b) c d = if ((fst (doSteps ((replaceAt (replaceAt a 2 d) 1  c), 0))) !! 0 == 19690720) then True else False
+attempt (a, b) c d = if ((fst (doSteps ((replaceParams a c d), 0))) !! 0 == 19690720) then True else False
 
 attemptSeq :: ([Int], Int) -> Int -> Int -> Maybe (Int, Int)
 attemptSeq (a, b) c d = if (d == 100) then Nothing else (if (attempt (a, b) c d) then Just (c, d) else (attemptSeq (a, b) c (d+1)))
@@ -44,8 +47,9 @@ pout (Just a) = do
 main = do
      fHand <- openFile "data/Day2.txt" ReadMode
      contents <- hGetContents fHand
-     print (doSteps ((replaceAt (replaceAt [(read x :: Int) | x <- (splitOn ","  contents)] 1  12) 2 2), 0))
-     pout (attemptSeq2 ( [(read x :: Int) | x <- (splitOn ","  contents)], 0) 0)
+     let input = [(read x :: Int) | x <- (splitOn ","  contents)]
+     print (doSteps ((replaceParams input 12 2), 0))
+     pout (attemptSeq2 (input, 0) 0)
      hClose fHand
 
 -- main = print (doSteps ([1, 9, 10, 3, 2, 3, 11, 0, 99, 30, 40, 50], 0))
