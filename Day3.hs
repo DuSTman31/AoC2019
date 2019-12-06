@@ -67,9 +67,7 @@ main = do
      fHand <- openFile "data/Day3.txt" ReadMode
      contents <- hGetContents fHand
      let input = [parseEntryList y | y <- (lines contents)]
---     print (overlappedSquares (loggedMoveSeq (head input) ((0,0),0)) (loggedMoveSeq (head (tail input)) ((0,0),0)))
      print (minimum (map manhattanDistance  (overlappedSquares (loggedMoveSeq (head input) ((0,0),0)) (loggedMoveSeq (head (tail input)) ((0,0),0)))))
---     print (loggedMoveSeq (head input) ((0,0), 0))
      print (part2 (loggedMoveSeq (head input) ((0,0),0)) (loggedMoveSeq (head (tail input)) ((0,0),0)) (overlappedSquares (loggedMoveSeq (head input) ((0,0),0)) (loggedMoveSeq (head (tail input)) ((0,0),0))))
      hClose fHand
 
