@@ -1,6 +1,6 @@
 
 
-all: Day1 Day1Big Day2 Day3 Day4 Day5
+all: Day1 Day1Big Day2 Day3 Day4 Day5 Day6
 
 Day1: Day1.hs
 	ghc Day1.hs
@@ -19,3 +19,6 @@ Day4: Day4.hs
 
 Day5: Day5.hs
 	ghc Day5.hs
+
+Day6: Day6.hs
+	ghc Day6.hs -O2
