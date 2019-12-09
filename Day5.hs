@@ -21,6 +21,12 @@ mMemory (a, _, _, _) = a
 mPos :: MachineState -> Int
 mPos (_, a, _, _) = a
 
+mInput :: MachineState -> [Int]
+mInput (_, _, a, _) = a
+
+mOutput :: MachineState -> [Int]
+mOutput (_, _, _, a) = a
+
 mReplaceMem :: MachineState -> Memory -> MachineState
 mReplaceMem (a, b, c, d) e = (e, b, c, d)
 
@@ -36,36 +42,80 @@ mGetIndMemory pos a = doubleIndirect (mMemory a) ((mPos a) + pos)
 mGetRelMemory :: Int -> MachineState -> Int
 mGetRelMemory a b = (mMemory b) !! ((mPos b) + a)
 
+mSetPos :: Int -> MachineState -> MachineState
+mSetPos e (a, b, c, d) = (a, e, c, d)
+
 mAdvPos :: Int -> MachineState -> MachineState
 mAdvPos e (a, b, c, d) = (a, (b+e), c, d)
 
 mGetOpcode :: MachineState -> Int
 mGetOpcode a = mGetRelMemory 0 a
 
+mGetInput :: MachineState -> Int
+mGetInput a = (head (mInput a))
+
+mConsumeInput :: MachineState -> MachineState
+mConsumeInput a = ((mMemory a), (mPos a), (tail (mInput a)), (mOutput a))
+
+mAddOutput :: Int -> MachineState -> MachineState
+mAddOutput cont a = ((mMemory a), (mPos a), (mInput a), ((mOutput a) ++ [cont]))
+
+mReadMemModed :: Int -> Int -> MachineState -> Int
+mReadMemModed 0 pos m = mGetIndMemory pos m
+mReadMemModed 1 pos m = (mMemory m) !! ((mPos m) + pos)
+
 doubleIndirect :: [Int] -> Int -> Int
 doubleIndirect a b = a !! (a !! b)
 
+type Insn = (Int, Int, Int, Int)
 
-addStep :: MachineState -> MachineState
-addStep a = mAdvPos 4 (mSetIndMemory 3 ((mGetIndMemory 1 a) + (mGetIndMemory 2 a)) a)
+addStep :: Insn -> MachineState -> MachineState
+addStep (w, x, y, z) a = mAdvPos 4 (mSetIndMemory 3 ((mReadMemModed y 1 a) + (mReadMemModed x 2 a)) a)
 
-multStep :: MachineState -> MachineState
-multStep a = mAdvPos 4 (mSetIndMemory 3 ((doubleIndirect (mMemory a) ((mPos a)+1)) * (doubleIndirect (mMemory a) ((mPos a)+2))) a)
+multStep :: Insn -> MachineState -> MachineState
+multStep (w, x, y, z) a = mAdvPos 4 (mSetIndMemory 3 ((mReadMemModed y 1 a) * (mReadMemModed x 2 a)) a)
 
-inputStep :: MachineState -> MachineState
-inputStep a = a
+inputStep :: Insn -> MachineState -> MachineState
+inputStep (w, x, y, z) a = mAdvPos 2 (mConsumeInput (mSetIndMemory 1 (mGetInput a) a))
 
-outputStep :: MachineState -> MachineState
-outputStep a = a
+outputStep :: Insn -> MachineState -> MachineState
+outputStep (w, x, y, z) a = mAdvPos 2 (mAddOutput (mReadMemModed y 1 a) a)
 
-executeOpcode :: Int -> MachineState -> MachineState
-executeOpcode 1 b = addStep b
-executeOpcode 2 b = multStep b
---executeOpcode 3 b = inputStep b
---executeopcode 4 b = outputStep b
+jumpIfTrueStep :: Insn -> MachineState -> MachineState
+jumpIfTrueStep (w, x, y, z) a = if ((mReadMemModed y 1 a) /= 0) then (mSetPos (mReadMemModed x 2 a) a) else (mAdvPos 3 a)
+
+jumpIfFalseStep :: Insn -> MachineState -> MachineState
+jumpIfFalseStep (w, x, y, z) a = if ((mReadMemModed y 1 a) == 0) then (mSetPos (mReadMemModed x 2 a) a) else (mAdvPos 3 a)
+
+lessThanStep :: Insn -> MachineState -> MachineState
+lessThanStep (w, x, y, z) a = if ((mReadMemModed x 2 a) > (mReadMemModed y 1 a)) then (mAdvPos 4 (mSetIndMemory 3 1 a)) else (mAdvPos 4 (mSetIndMemory 3 0 a))
+
+equalsStep :: Insn -> MachineState -> MachineState
+equalsStep (w, x, y, z) a = if ((mReadMemModed x 2 a) == (mReadMemModed y 1 a)) then (mAdvPos 4 (mSetIndMemory 3 1 a)) else (mAdvPos 4 (mSetIndMemory 3 0 a))
+
+executeOpcode :: Insn -> MachineState -> MachineState
+executeOpcode (a, b, c, 1) d = addStep (a, b, c, 1) d
+executeOpcode (a, b, c, 2) d = multStep (a, b, c, 2) d
+executeOpcode (a, b, c, 3) d = inputStep (a, b, c, 3) d
+executeOpcode (a, b, c, 4) d = outputStep (a, b, c, 4) d
+executeOpcode (a, b, c, 5) d = jumpIfTrueStep (a, b, c, 5) d
+executeOpcode (a, b, c, 6) d = jumpIfFalseStep (a, b, c, 6) d
+executeOpcode (a, b, c, 7) d = lessThanStep (a, b, c, 7) d
+executeOpcode (a, b, c, 8) d = equalsStep (a, b, c, 8) d
+
+padToLength :: Int -> [Int] -> [Int]
+padToLength a b = if ((length b) == a) then b else ([0] ++ (padToLength (a-1) b))
+
+intToDigits :: Int -> [Int]
+intToDigits a = if (a < 10) then [a] else  (intToDigits (div a 10)) ++ [(mod a 10)]
+
+decodeInstruction :: Int -> (Int, Int, Int, Int)
+decodeInstruction a = let d = (padToLength 5 (intToDigits a))
+		  in ((d !! 0), (d !! 1), (d !! 2), (((d !! 3) * 10) + (d !! 4)))
+
 
 doSteps :: MachineState -> MachineState
-doSteps a = if (mGetOpcode a == 99) then a else (doSteps (executeOpcode (mGetOpcode a) a))
+doSteps a = if (mGetOpcode a == 99) then a else (doSteps (executeOpcode (decodeInstruction (mGetOpcode a)) a))
 
 
 replaceParams :: MachineState -> Int -> Int -> MachineState
@@ -89,12 +139,21 @@ pout (Just a) = do
      putStrLn (show a)
 
 main = do
-     fHand <- openFile "data/Day2.txt" ReadMode
+     fHand <- openFile "data/Day5.txt" ReadMode
      contents <- hGetContents fHand
      let input = [(read x :: Int) | x <- (splitOn ","  contents)]
-     print input
-     print (mGetIndMemory 1 ([2, 0, 0, 0, 1, 0, 0, 0, 99], 4, [], []))
+     print (doSteps (input, 0, [1], []))
+     print (doSteps ([3,9,8,9,10,9,4,9,99,-1,8], 0, [1], []))
+     print (doSteps ([3,9,8,9,10,9,4,9,99,-1,8], 0, [8], []))
+     print (doSteps ([3,9,7,9,10,9,4,9,99,-1,8], 0, [1], []))
+     print (doSteps ([3,9,7,9,10,9,4,9,99,-1,8], 0, [8], []))
+     print (doSteps ([3,3,1108,-1,8,3,4,3,99], 0, [1], []))
+     print (doSteps ([3,3,1108,-1,8,3,4,3,99], 0, [8], []))
+     print (doSteps ([3,3,1107,-1,8,3,4,3,99], 0, [1], []))
+     print (doSteps ([3,3,1107,-1,8,3,4,3,99], 0, [8], []))		
+     print (doSteps (input, 0, [5], []))     
+--     print (mGetIndMemory 1 ([2, 0, 0, 0, 1, 0, 0, 0, 99], 4, [], []))
 --     print (doSteps ([1,0,0,0,1,0,0,0,99], 0, [], []))
-     print (doSteps (replaceParams (input, 0, [], []) 12 2))
+--     print (doSteps (replaceParams (input, 0, [], []) 12 2))
 --     pout (attemptSeq2 (input, 0, [], []) 0)
      hClose fHand
