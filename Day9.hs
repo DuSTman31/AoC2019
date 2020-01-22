@@ -2,13 +2,19 @@ import System.IO
 import Data.List.Split
 import Data.Maybe
 import qualified Data.List as List
+import Control.Exception
+import Control.DeepSeq
+import qualified Data.Map as Map
 
 -- Generic functions for replacing content of an array at a specific point.
-replaceAtInt :: [a] -> Int -> Int -> a -> [a]
-replaceAtInt a b c d = if (c == b) then ([d] ++ (tail a)) else ([head a] ++ (replaceAtInt (tail a) b (c + 1) d))
+replaceAt_int :: [a] -> Int -> a -> [a]
+replaceAt_int a 0 d = [d] ++ (tail a)
+replaceAt_int a b d = [head a] ++ (replaceAt_int (tail a) (b-1) d)
 
 replaceAt :: [a] -> Int -> a -> [a]
-replaceAt a b c = replaceAtInt a b 0 c
+replaceAt a b c = let i = splitAt b a 
+                      x = (\(y, z) -> y ++ [c] ++ tail z)
+                  in x i
 
 -- Ensure an array is at least "b" specified length, lengthening it with copies of "c" as necessary.
 setMinimumLength_int :: [a] -> Int -> a -> [a]
@@ -21,7 +27,7 @@ setMinimumLength a b c = if ((length a) >= b) then a else (setMinimumLength_int 
 
 -- Utility functions for handling the memory of the machine
 type MemoryElement = Integer
-type Memory = [MemoryElement]
+type Memory = (Map.Map Integer Integer, Integer)
 
 -- Utility functions for handling the machine state as a whole
 type MachineState = (Memory, Int, [Integer], [Integer], Int)
@@ -44,17 +50,25 @@ mRelBase (_, _, _, _, a) = a
 mReplaceMem :: MachineState -> Memory -> MachineState
 mReplaceMem (a, b, c, d, e) n = (n, b, c, d, e)
 
-mSetMemory :: Int -> MemoryElement -> MachineState -> MachineState
-mSetMemory pos cont a =  mReplaceMem a (replaceAt (mMemory a) pos cont)
 
-mSetIndMemory :: Int -> MemoryElement -> MachineState -> MachineState
-mSetIndMemory pos cont a = mSetMemory (fromIntegral (mMemory a !! ((mPos a)+pos))) cont a
+mMemoryReserve_int :: Memory -> Integer -> Memory
+mMemoryReserve_int m i = if (snd m < i) then mMemoryReserve_int ((Map.insert (snd m) 0 (fst m)), ((snd m) + 1)) i else m
 
-mGetIndMemory :: Int ->  MachineState -> MemoryElement
-mGetIndMemory pos a = doubleIndirect (mMemory a) ((mPos a) + pos)
+mMemoryReserve :: MachineState -> Integer -> MachineState
+mMemoryReserve m i = let mem = mMemory m
+                     in if (snd mem < i) then mReplaceMem  m (mMemoryReserve_int mem i) else m
+
+
+mMemPrimWrite :: MemoryElement -> Integer -> Memory -> Memory
+mMemPrimWrite cont i m = ((Map.insert i cont (fst m)), snd m)
+
+mMemPrimRead :: Integer -> Memory -> MemoryElement
+mMemPrimRead i m = let c = Map.lookup i (fst m)
+                   in if (isJust c) then fromJust c else 0
 
 mGetRelMemory :: Int -> MachineState -> MemoryElement
-mGetRelMemory a b = (mMemory b) !! ((mPos b) + a)
+mGetRelMemory a b = let c = Map.lookup (fromIntegral ((mPos b) + a)) (fst (mMemory b))
+                    in if (isJust c) then fromJust c else 0
 
 mSetPos :: Int -> MachineState -> MachineState
 mSetPos n (a, b, c, d, e) = (a, n, c, d, e)
@@ -96,20 +110,20 @@ mGetOpcode a = fromIntegral (mGetRelMemory 0 a)
 -- Functions to implement the memory access modes.
 -- memory read functions.
 mReadPositionMode :: Int -> MachineState -> MemoryElement
-mReadPositionMode pos m = let efPos = (pos + (mPos m))
-                              em = setMinimumLength (mMemory m) (efPos+1) 0
-                              em2 = setMinimumLength em ((fromIntegral (em !! efPos))+1) 0
-                          in em2 !! (fromIntegral (em2 !! efPos))
+mReadPositionMode pos m = let efPos = fromIntegral (pos + (mPos m))
+                              em = mMemoryReserve m (efPos+1)
+                              em2 = mMemoryReserve em ((mMemPrimRead efPos (mMemory em))+1)
+                          in mMemPrimRead (mMemPrimRead efPos (mMemory em2)) (mMemory em2)
 
 mReadImmediateMode :: Int -> MachineState -> MemoryElement
-mReadImmediateMode pos m = let efPos = (pos + (mPos m))
-                           in (mMemory m) !! efPos
+mReadImmediateMode pos m = let efPos = fromIntegral (pos + (mPos m))
+                           in mMemPrimRead efPos (mMemory m)
 
 mReadRelativeMode :: Int -> MachineState -> MemoryElement
-mReadRelativeMode pos m = let efPos = (pos + (mPos m))
-                              em = setMinimumLength (mMemory m) (efPos+1) 0
-                              em2 = setMinimumLength em (((fromIntegral (em !! efPos)) + (mRelBase m))+1) 0
-                          in em2 !! ((fromIntegral (em !! efPos)) + (mRelBase m))
+mReadRelativeMode pos m = let efPos = fromIntegral (pos + (mPos m))
+                              em = mMemoryReserve m (efPos+1) 
+                              em2 = mMemoryReserve em (( (mMemPrimRead efPos (mMemory em)) + (fromIntegral (mRelBase m)))+1)
+                          in mMemPrimRead (( (mMemPrimRead efPos (mMemory em2))) + (fromIntegral (mRelBase m))) (mMemory em2) 
 
 mReadMemModed :: Int -> Int -> MachineState -> MemoryElement
 mReadMemModed 0 pos m = mReadPositionMode pos m
@@ -119,16 +133,18 @@ mReadMemModed 2 pos m = mReadRelativeMode pos m
 -- memory write functions.
 
 mWritePositionMode :: Int -> MemoryElement -> MachineState -> MachineState
-mWritePositionMode pos cont m = let efPos = (pos + (mPos m))
-                                    em = setMinimumLength (mMemory m) (efPos+1) 0
-                                    em2 = setMinimumLength em ((fromIntegral (em !! efPos)) + 1) 0
-                                in mReplaceMem m (replaceAt em2 (fromIntegral (em2 !! efPos)) cont)
+mWritePositionMode pos cont m = let efPos = fromIntegral (pos + (mPos m))
+                                    em = mMemoryReserve m (efPos+1)
+                                    em2 = mMemoryReserve em ((fromIntegral (mMemPrimRead efPos (mMemory em))) + 1)
+                                    pointer = mMemPrimRead efPos (mMemory em2)
+                                in mReplaceMem m (mMemPrimWrite cont pointer (mMemory em2))
 
 mWriteRelativeMode :: Int -> MemoryElement -> MachineState -> MachineState
-mWriteRelativeMode pos cont m = let efPos = (pos + (mPos m))
-                                    em = setMinimumLength (mMemory m) (efPos+1) 0
-                                    em2 = setMinimumLength em ((fromIntegral (em !! efPos) + (mRelBase m))+1) 0
-                                in mReplaceMem m (replaceAt em2 (fromIntegral (em2 !! efPos) + (mRelBase m)) cont)
+mWriteRelativeMode pos cont m = let efPos = fromIntegral (pos + (mPos m))
+                                    memcont = (\x -> fst (mMemory x))
+                                    em = mMemoryReserve m (efPos+1)
+                                    em2 = mMemoryReserve em ((mMemPrimRead efPos (mMemory em) + (fromIntegral (mRelBase m)))+1)
+                                in mReplaceMem m ((Map.insert (mMemPrimRead efPos (mMemory em2) + (fromIntegral (mRelBase m))) cont (memcont em2)), snd (mMemory em2))
 
 mWriteMemModed :: Int -> Int -> MemoryElement -> MachineState -> MachineState
 mWriteMemModed 0 pos cont m = mWritePositionMode pos cont m
@@ -137,16 +153,19 @@ mWriteMemModed 2 pos cont m = mWriteRelativeMode pos cont m
 mIsTerminated :: MachineState -> Bool
 mIsTerminated a = if ((mGetOpcode a) == 99) then True else False
 
-doubleIndirect :: Memory -> Int -> MemoryElement
-doubleIndirect a b = a !! (fromIntegral (a !! b))
+mListToMemory :: [MemoryElement] -> Memory
+mListToMemory me = (Map.fromList (zip (map fromIntegral [0..((length me)-1)]) me), fromIntegral (length me))
+
 
 type Insn = (Int, Int, Int, Int)
 
 addStep :: Insn -> MachineState -> MachineState
-addStep (w, x, y, z) a = mAdvPos 4 (mWriteMemModed w 3 ((mReadMemModed y 1 a) + (mReadMemModed x 2 a)) a)
+addStep (w, x, y, z) a = let ans = (mWriteMemModed w 3 ((mReadMemModed y 1 a) + (mReadMemModed x 2 a)) a)
+                         in ans `seq` mAdvPos 4 ans
 
 multStep :: Insn -> MachineState -> MachineState
-multStep (w, x, y, z) a = mAdvPos 4 (mWriteMemModed w 3 ((mReadMemModed y 1 a) * (mReadMemModed x 2 a)) a)
+multStep (w, x, y, z) a = let ans = (mWriteMemModed w 3 ((mReadMemModed y 1 a) * (mReadMemModed x 2 a)) a)
+                          in ans `seq` mAdvPos 4 ans
 
 inputStep :: Insn -> MachineState -> MachineState
 inputStep (w, x, y, z) a = mAdvPos 2 (mConsumeInput (mWriteMemModed y 1 (fromIntegral (mGetInput a)) a))
@@ -161,7 +180,10 @@ jumpIfFalseStep :: Insn -> MachineState -> MachineState
 jumpIfFalseStep (w, x, y, z) a = if ((mReadMemModed y 1 a) == 0) then (mSetPos (fromIntegral (mReadMemModed x 2 a)) a) else (mAdvPos 3 a)
 
 lessThanStep :: Insn -> MachineState -> MachineState
-lessThanStep (w, x, y, z) a = if ((mReadMemModed x 2 a) > (mReadMemModed y 1 a)) then (mAdvPos 4 (mWriteMemModed w 3 1 a)) else (mAdvPos 4 (mWriteMemModed w 3 0 a))
+lessThanStep (w, x, y, z) a = let op = (\o -> (mAdvPos 4 (mWriteMemModed w 3 o a)))
+                                  op1 = op 1
+                                  op2 = op 0
+                              in if ((mReadMemModed x 2 a) > (mReadMemModed y 1 a)) then op1 `seq` op1 else op2 `seq` op2
 
 equalsStep :: Insn -> MachineState -> MachineState
 equalsStep (w, x, y, z) a = if ((mReadMemModed x 2 a) == (mReadMemModed y 1 a)) then (mAdvPos 4 (mWriteMemModed w 3 1 a)) else (mAdvPos 4 (mWriteMemModed w 3 0 a))
@@ -188,16 +210,17 @@ intToDigits a = if (a < 10) then [a] else  (intToDigits (div a 10)) ++ [(mod a 1
 
 decodeInstruction :: Int -> (Int, Int, Int, Int)
 decodeInstruction a = let d = (padToLength 5 (intToDigits a))
-		  in ((d !! 0), (d !! 1), (d !! 2), (((d !! 3) * 10) + (d !! 4)))
+                      in ((d !! 0), (d !! 1), (d !! 2), (((d !! 3) * 10) + (d !! 4)))
 
 step :: MachineState -> MachineState
 step a = executeOpcode (decodeInstruction (mGetOpcode a)) a
 
 stepUntilTermination :: MachineState -> MachineState
-stepUntilTermination a = if (mGetOpcode a == 99) then a else (stepUntilTermination (step a))
+stepUntilTermination a = let sa = step a
+                         in if (mGetOpcode sa == 99) then sa else sa `seq` stepUntilTermination sa
 
 stepUntilOutput :: MachineState -> MachineState
-stepUntilOutput a = if ((mGetOpcode a == 99) || ((length (mOutput a)) /= 0) ) then a else (stepUntilOutput (step a)))
+stepUntilOutput a = if ((mGetOpcode a == 99) || ((length (mOutput a)) /= 0) ) then a else (stepUntilOutput (step a))
 
 type MachineArray = [MachineState]
 
@@ -208,9 +231,5 @@ main = do
      fHand <- openFile "data/Day9.txt" ReadMode
      contents <- hGetContents fHand
      let input = [(read x :: Integer) | x <- (splitOn ","  contents)]
-     print (stepUntilTermination ([109,1,204,-1,1001,100,1,100,1008,100,16,101,1006,101,0,99], 0, [], [], 0))
-     print (stepUntilTermination ([1102,34915192,34915192,7,4,7,99,0], 0, [], [], 0))
-     print (stepUntilTermination ([104,1125899906842624,99], 0, [], [], 0))
-     print (stepUntilTermination (input, 0, [1], [], 0))
-     print (stepUntilTermination (input, 0, [2], [], 0))
+     print (stepUntilTermination (mListToMemory input, 0, [2], [], 0))
      hClose fHand
