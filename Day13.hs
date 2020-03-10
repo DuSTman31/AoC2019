@@ -153,6 +153,14 @@ mWriteMemModed 2 pos cont m = mWriteRelativeMode pos cont m
 mIsTerminated :: MachineState -> Bool
 mIsTerminated a = if ((mGetOpcode a) == 99) then True else False
 
+mIsWaitingForInput :: MachineState -> Bool
+mIsWaitingForInput m = let gi = (\(_, _, _, x) -> x)
+                           insn = gi (decodeInstruction (mGetOpcode m))
+                       in if (insn == 3) then True else False
+
+mHasOutput :: MachineState -> Bool
+mHasOutput m = if ((length (mOutput m)) /= 0) then True else False
+
 mListToMemory :: [MemoryElement] -> Memory
 mListToMemory me = (Map.fromList (zip (map fromIntegral [0..((length me)-1)]) me), fromIntegral (length me))
 
@@ -217,10 +225,16 @@ step a = executeOpcode (decodeInstruction (mGetOpcode a)) a
 
 stepUntilTermination :: MachineState -> MachineState
 stepUntilTermination a = let sa = step a
-                         in if (mGetOpcode sa == 99) then sa else sa `seq` stepUntilTermination sa
+                         in if (mIsTerminated sa) then sa else sa `seq` stepUntilTermination sa
 
 stepUntilOutput :: MachineState -> MachineState
-stepUntilOutput a = if ((mGetOpcode a == 99) || ((length (mOutput a)) /= 0) ) then a else (stepUntilOutput (step a))
+stepUntilOutput a = if (mIsTerminated a || mHasOutput a) then a else (stepUntilOutput (step a))
+
+stepUntilInput :: MachineState -> MachineState
+stepUntilInput m = if (mIsTerminated m || mIsWaitingForInput m) then m else (stepUntilInput (step m))
+
+stepUntilIO :: MachineState -> MachineState
+stepUntilIO m = if (mIsTerminated m || mHasOutput m || mIsWaitingForInput m) then m else (stepUntilIO (step m))
 
 type MachineArray = [MachineState]
 
@@ -280,6 +294,7 @@ rGetScore (_, _, s, _) = s
 rReplaceScore :: Robot -> Integer -> Robot
 rReplaceScore (a, b, c, d) s = (a, b, s, d)
 
+
 enlarge :: Picture -> Coord -> Picture
 enlarge p (cx, cy) = let minx = (\i -> if (cx < (pMinX i)) then (pReplaceMinX i cx) else i)
                          miny = (\i -> if (cy < (pMinY i)) then (pReplaceMinY i cy) else i)
@@ -305,7 +320,7 @@ robotStep r = let m1 = (stepUntilOutput (rGetMachine r))
                   m3 = stepUntilOutput (rGetMachine r2)
                   tile = mGetOutput m3
                   r3 = rReplaceMachine r2 (mConsumeOutput m3) 
-              in if (x == -1 && x == 0) then (rReplaceScore r3 tile) else (rPaint r3 ((fromIntegral x), (fromIntegral y)) (fromIntegral tile))
+              in if (x == -1 && y == 0) then (rReplaceScore r3 tile) else (rPaint r3 ((fromIntegral x), (fromIntegral y)) (fromIntegral tile))
 
   
 runRobotSteps :: Robot -> Robot
@@ -316,30 +331,34 @@ runRobotSteps r  = let mr = rGetMachine r
 blocksRemain :: Robot -> Int
 blocksRemain r =  length (filter (\(x, y) -> if (y == 2) then True else False) (Map.toList (pData (rGetPic r))))
 
-runRobotSteps2 :: Robot -> (Robot, Bool)
+runRobotSteps2 :: Robot -> Robot
 runRobotSteps2 r  = let mr = rGetMachine r
-                        smr = stepUntilOutput mr
-                        br = (\y -> if (blocksRemain y == 0) then True else False)
-                    in if (mIsTerminated smr) then ((rReplaceMachine r smr), (br (rReplaceMachine r smr))) else robJoyDispatch r
+                        smr = stepUntilIO mr
+                    in if (mIsTerminated smr) then (rReplaceMachine r smr) else (if (mIsWaitingForInput smr) then (robJoyDispatch (rReplaceMachine r smr)) else (runRobotSteps2 (robotStep r)))
 
-robJoyDispatch :: Robot -> (Robot, Bool)
-robJoyDispatch r = let rai = (\x i -> rReplaceMachine x (mAddInput (rGetMachine x) i))
-                   in if (snd (runRobotSteps2 (robotStep (rai r (-1)))))
-                      then (runRobotSteps2 (robotStep (rai r (-1))))
-                      else
-                        (if (snd (runRobotSteps2 (robotStep (rai r 0))))
-                         then
-                           (runRobotSteps2 (robotStep (rai r 0)))
-                          else
-                           (if (snd (runRobotSteps2 (robotStep (rai r 1))))
-                            then
-                              (runRobotSteps2 (robotStep (rai r 1)))
-                             else
-                              (r, False)))
-                                                                                                              
+robJoyDispatch :: Robot -> Robot
+robJoyDispatch r = if (hasPaddle r && hasBall r) then (runRobotSteps2 (robotStep (rReplaceMachine r (mAddInput (rGetMachine r) (fromIntegral (getBallDirection r)))))) else (runRobotSteps2 (robotStep r))
+                                                                                                             
 
---runRobotStepsI :: Robot -> Int ->  Robot
---runRobotStepsI r i  = if (i == 0)  then r else (runRobotStepsI (robotStep (rReplaceMachine r (mAddInput (rGetMachine r) (fromIntegral (rGetColour r))))) (i-1))
+hasBlockType :: Robot -> Int -> Bool
+hasBlockType r b = if (length (filter (\x -> if ((snd x) == b) then True else False) (Map.toList (pData (rGetPic r)))) /= 0) then True else False
+
+hasPaddle :: Robot -> Bool
+hasPaddle r = hasBlockType r 3
+
+getPaddlePosition :: Robot -> Coord
+getPaddlePosition r = let paddlepix = filter (\x -> if ((snd x) == 3) then True else False) (Map.toList (pData (rGetPic r)))
+                      in fst (paddlepix !! 0)
+
+hasBall :: Robot -> Bool
+hasBall r = hasBlockType r 4
+
+getBallPosition :: Robot -> Coord
+getBallPosition r = let ballpix = filter (\x -> if ((snd x) == 4) then True else False) (Map.toList (pData (rGetPic r)))
+                    in fst (ballpix !! 0)
+
+getBallDirection :: Robot -> Int
+getBallDirection r = if ((fst (getBallPosition r)) > (fst (getPaddlePosition r))) then 1 else (if ((fst (getBallPosition r)) < (fst (getPaddlePosition r))) then (-1) else 0)
 
 op_c :: Int -> Char
 op_c 0 = ' '
