@@ -5,6 +5,7 @@ import qualified Data.List as List
 import Control.Exception
 import Control.DeepSeq
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 
 -- Generic functions for replacing content of an array at a specific point.
 replaceAt_int :: [a] -> Int -> a -> [a]
@@ -328,38 +329,108 @@ runRobotSteps r  = let mr = rGetMachine r
                        smr = stepUntilOutput mr
                    in if (mIsTerminated smr) then (rReplaceMachine r smr) else runRobotSteps (robotStep r)
 
-
-type Route = (MachineState, Int)
+type Route = (MachineState, Int, Coord)
 
 routeMachine :: Route -> MachineState
-routeMachine (m, _) = m
+routeMachine (m, _, _) = m
 
 routeReplaceMachine :: Route -> MachineState -> Route
-routeReplaceMachine (_, l) nm = (nm, l)
+routeReplaceMachine (_, l, c) nm = (nm, l, c)
 
 routeLength :: Route -> Int
-routeLength (_, l) = l
+routeLength (_, l, _) = l
 
 routeIncLength :: Route -> Route
-routeIncLength (m, l) = (m, (l+1))
+routeIncLength (m, l, c) = (m, (l+1), c)
+
+routeCoord :: Route -> Coord
+routeCoord (_, _, c) = c
+
+routeReplaceCoord :: Route -> Coord -> Route
+routeReplaceCoord (a, b, _) c = (a, b, c)
 
 selectShortestRoute :: [Route] -> Route
 selectShortestRoute r = foldl1 (\x y -> if (routeLength x < routeLength y) then x else y) r
 
-expandRoute :: Route -> [Route]
-expandRoute r = let mv = (\x -> routeIncLength (routeReplaceMachine r (stepUntilOutput (mAddInput (routeMachine r) x))))
-                in filter (\x -> (mGetOutput (routeMachine x)) /= 0) ([mv 1] ++ [mv 2] ++ [mv 3] ++ [mv 4])
+routeExtendCoord :: Route -> Int -> Route
+routeExtendCoord r d = let f = fst (routeCoord r)
+                           s = snd (routeCoord r)
+                       in case d of
+                            1 -> routeReplaceCoord r (f, s-1)
+                            2 -> routeReplaceCoord r (f, s+1)
+                            3 -> routeReplaceCoord r (f-1, s)
+                            4 -> routeReplaceCoord r (f+1, s)
+
+routeMove :: Route -> Int -> Route
+routeMove r d = routeExtendCoord (routeIncLength r) d
+
+addRoutesToSet :: [Route] -> Set.Set Coord -> Set.Set Coord
+addRoutesToSet r c = foldl (\x y -> Set.insert (routeCoord y) x) c r
+
+dijkstra :: [Route] -> Set.Set Coord -> Route
+dijkstra r cs = let sr = selectShortestRoute r
+                    rr = filter (\x -> (x /= sr)) r
+                    xr = (expandRouteIfNotInSet (routeReplaceMachine sr (mConsumeOutput (routeMachine sr))) cs)
+                in if ((mGetOutput (routeMachine sr)) == 2) then (routeReplaceMachine sr (mConsumeOutput (routeMachine sr))) else (dijkstra (xr ++ rr) (addRoutesToSet xr cs))
 
 
-dijkstra :: [Route] -> Route
-dijkstra r = let sr = selectShortestRoute r
-                 rr = filter (\x -> (x /= sr)) r
-             in if ((mGetOutput (routeMachine sr)) == 2) then sr else (dijkstra ((expandRoute (routeReplaceMachine sr (mConsumeOutput (routeMachine sr)))) ++ rr))
+expandRouteIfNotInSet :: Route -> Set.Set Coord -> [Route]
+expandRouteIfNotInSet r cs = let mv = (\x -> routeMove (routeReplaceMachine r (stepUntilOutput (mAddInput (routeMachine r) x))) (fromIntegral x))
+                             in filter (\x -> ((mGetOutput (routeMachine x)) /= 0) && (Set.notMember (routeCoord x) cs)) ([mv 1] ++ [mv 2] ++ [mv 3] ++ [mv 4])
+
+type Routes = (Map.Map Int [Route], Set.Set Coord)
+
+routesDR :: Routes -> Map.Map Int [Route]
+routesDR (r, _) = r
+
+routesReplaceDR :: Routes -> Map.Map Int [Route] -> Routes
+routesReplaceDR (_, b) dr = (dr, b)
+
+routesVisitedSet :: Routes -> Set.Set Coord
+routesVisitedSet (_, c) = c
+
+routesReplaceVisitedSet :: Routes -> Set.Set Coord -> Routes
+routesReplaceVisitedSet (a, _) ns = (a, ns)
+
+routesShortestDist :: Routes -> Int
+routesShortestDist r = if (Map.null (routesDR r)) then 0 else (head (Map.keys (routesDR r)))
+
+selectShortestRoutes :: Routes -> [Route]
+selectShortestRoutes r = let qr = Map.lookup (routesShortestDist r) (routesDR r)
+                             in if (isNothing qr) then [] else (fromJust qr)
+
+filterShortestRoutes :: Routes -> Routes
+filterShortestRoutes r = let nr = (routesReplaceDR r (Map.delete (routesShortestDist r) (routesDR r)) )
+                         in nr
+
+expandRoutes :: [Route] -> Set.Set Coord -> [Route]
+expandRoutes [] c = []
+expandRoutes (h:t) c = let er = expandRouteIfNotInSet h c
+                       in er ++ expandRoutes t (addRoutesToSet er c)
+
+routesAddRoute :: Routes -> Route -> Routes
+routesAddRoute r r1 = let rl = (routeLength r1)
+                          ir = (Set.insert (routeCoord r1) (routesVisitedSet r))
+                      in if (Set.member (routeCoord r1) (routesVisitedSet r)) then r else (if (isJust (Map.lookup rl (routesDR r))) then  (routesReplaceVisitedSet (routesReplaceDR r (Map.insert rl ((fromJust (Map.lookup rl (routesDR r))) ++ [r1]) (routesDR r))) ir) else (routesReplaceVisitedSet (routesReplaceDR r (Map.insert rl ([r1]) (routesDR r)))) ir)
+
+routesAddRoutes :: Routes -> [Route] -> Routes
+routesAddRoutes r [] = r
+routesAddRoutes r (h:t) = routesAddRoutes (routesAddRoute r h) t
+
+expansionPass :: Routes -> Int -> Int
+expansionPass r i = let xr = expandRoutes (selectShortestRoutes r) (routesVisitedSet r)
+                      in if (length xr == 0) then i else expansionPass (routesAddRoutes (filterShortestRoutes r) xr) (i + 1)
 
 main = do
      fHand <- openFile "data/Day15.txt" ReadMode
      contents <- hGetContents fHand
      let input = [(read x :: Integer) | x <- (splitOn ","  contents)]
-         r = ((mListToMemory input, 0, [], [], 0), 0)
-     print (dijkstra (expandRoute r))
+         r = ((mListToMemory input, 0, [], [], 0), 0, (0,0))
+         p1 = (dijkstra (expandRouteIfNotInSet r Set.empty) Set.empty)
+         p2 = ((Map.insert (routeLength p1) ([p1]) Map.empty), (Set.insert (routeCoord p1) Set.empty))
+     print p1
+     print (expandRoutes (selectShortestRoutes p2) (routesVisitedSet p2))
+--     print (filterShortestRoutes p2)
+--     print (routesAddRoutes (filterShortestRoutes p2) (expandRoutes (selectShortestRoutes p2) (routesVisitedSet p2)) )
+     print (expansionPass p2 0)
      hClose fHand
