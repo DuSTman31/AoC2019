@@ -378,6 +378,13 @@ expandRouteIfNotInSet :: Route -> Set.Set Coord -> [Route]
 expandRouteIfNotInSet r cs = let mv = (\x -> routeMove (routeReplaceMachine r (stepUntilOutput (mAddInput (routeMachine r) x))) (fromIntegral x))
                              in filter (\x -> ((mGetOutput (routeMachine x)) /= 0) && (Set.notMember (routeCoord x) cs)) ([mv 1] ++ [mv 2] ++ [mv 3] ++ [mv 4])
 
+
+depthSearch :: [Route] -> Set.Set Coord -> Set.Set Coord
+depthSearch r c = let sr = selectShortestRoute r
+                      rr = filter (\x -> x /= sr) r
+                      xr = (expandRouteIfNotInSet (routeReplaceMachine sr (mConsumeOutput (routeMachine sr))) c)
+                  in if (r == []) then c else depthSearch (xr ++ rr) (addRoutesToSet xr c)  
+
 type Routes = (Map.Map Int [Route], Set.Set Coord)
 
 routesDR :: Routes -> Map.Map Int [Route]
@@ -417,9 +424,15 @@ routesAddRoutes :: Routes -> [Route] -> Routes
 routesAddRoutes r [] = r
 routesAddRoutes r (h:t) = routesAddRoutes (routesAddRoute r h) t
 
-expansionPass :: Routes -> Int -> Int
-expansionPass r i = let xr = expandRoutes (selectShortestRoutes r) (routesVisitedSet r)
-                      in if (length xr == 0) then i else expansionPass (routesAddRoutes (filterShortestRoutes r) xr) (i + 1)
+expansionPass :: Routes -> Set.Set Coord -> Int -> Int
+expansionPass r c i = let xr = expandRoutes (selectShortestRoutes r) (routesVisitedSet r)
+                          rar = routesAddRoutes (filterShortestRoutes r) (filter (\x -> (Set.member (routeCoord x) c)) xr)
+                      in if (length xr == 0) then i else rar `seq` expansionPass rar c (i + 1)
+
+expansionPass_i :: Routes -> Int -> Int -> Routes
+expansionPass_i r i it = let xr = expandRoutes (selectShortestRoutes r) (routesVisitedSet r)
+                             rar = routesAddRoutes (filterShortestRoutes r) xr
+                         in if (i == it) then r else rar `seq` expansionPass_i rar (i + 1) it
 
 main = do
      fHand <- openFile "data/Day15.txt" ReadMode
@@ -432,5 +445,5 @@ main = do
      print (expandRoutes (selectShortestRoutes p2) (routesVisitedSet p2))
 --     print (filterShortestRoutes p2)
 --     print (routesAddRoutes (filterShortestRoutes p2) (expandRoutes (selectShortestRoutes p2) (routesVisitedSet p2)) )
-     print (expansionPass p2 0)
+     print (expansionPass p2 (depthSearch (expandRouteIfNotInSet r Set.empty) Set.empty) 0)
      hClose fHand
