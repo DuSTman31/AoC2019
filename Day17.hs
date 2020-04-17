@@ -6,6 +6,7 @@ import Control.Exception
 import Control.DeepSeq
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import qualified Data.Char as Char
 
 -- Generic functions for replacing content of an array at a specific point.
 replaceAt_int :: [a] -> Int -> a -> [a]
@@ -315,11 +316,13 @@ dirRelation 2 1 = 'L'
 dirRelation 3 0 = 'R'
 dirRelation 3 2 = 'L'
 
-doRoute :: Coord -> Int -> Set.Set Coord -> String
+type MovIns = (Char, Int)
+
+doRoute :: Coord -> Int -> Set.Set Coord -> [MovIns]
 doRoute c d cs = let dtt = dirToTurn c d cs
                      dil = distInLine c dtt cs
                      ti = dirRelation d dtt
-                 in if (dtt == 4) then "" else ([ti] ++ "," ++ (show dil) ++ "," ++ (doRoute (forwards c dtt dil) dtt cs))
+                 in if (dtt == 4) then [] else ((ti, dil):(doRoute (forwards c dtt dil) dtt cs))
 
 robotInRow :: [Integer] -> Bool
 robotInRow [] = False
@@ -337,16 +340,129 @@ robotLocation_i (h:t) y = if (robotInRow h) then (robotX h, y) else (robotLocati
 robotLocation :: [[Integer]] -> Coord
 robotLocation r = robotLocation_i r 0
 
+isRepeated_i :: [MovIns] -> [MovIns] -> Bool
+isRepeated_i [] _ = True
+isRepeated_i n [] = False
+isRepeated_i (nh:nt) (hh:ht) = if (nh == hh) then (isRepeated_i nt ht) else False
+
+isRepeated :: [MovIns] -> [MovIns] -> Bool
+isRepeated n [] = False
+isRepeated (nh:nt) (hh:ht) = if (nh == hh) then (if (isRepeated_i (nh:nt) (hh:ht)) then True else (isRepeated (nh:nt) ht)) else (isRepeated (nh:nt) ht)
+
+findFirstRepeatedSeq_i :: [MovIns] -> [MovIns] -> [MovIns]
+findFirstRepeatedSeq_i stt (hh:ht) = if (isRepeated (stt ++ [hh]) ht) then (findFirstRepeatedSeq_i (stt ++ [hh]) ht) else stt
+
+findFirstRepeatedSeq :: [MovIns] -> [MovIns]
+findFirstRepeatedSeq r = findFirstRepeatedSeq_i [] r
+
+findLastRepeatedSeq :: [MovIns] -> [MovIns]
+findLastRepeatedSeq r = reverse (findFirstRepeatedSeq (reverse r))
+
+firstElements :: [MovIns] -> [MovIns] -> Bool
+firstElements [] h = True
+firstElements n [] = False
+firstElements (nh:nt) (hh:ht) = if (nh == hh) then (firstElements nt ht) else False
+
+matchLists :: [MovIns] -> [MovIns] -> [MovIns] -> [MovIns] -> Maybe (Char, [MovIns])
+matchLists a b c r = let fe = (\x -> firstElements x r)
+                         j = (\x y -> Just (x, drop (length y) r))
+                     in if (fe a) then (j 'A' a) else (if (fe b) then (j 'B' b) else (if (fe c) then (j 'C' c) else Nothing))
+
+
+fitRouteToComponents_i :: [MovIns] -> [MovIns] -> [MovIns] -> [MovIns] -> [Char] -> Maybe [Char]
+fitRouteToComponents_i a b c r t = let ml = matchLists a b c r
+                                       xcl = t ++ [fst (fromJust ml)]
+                                   in if (isJust (ml)) then (if ((snd (fromJust ml)) == []) then (Just xcl) else (fitRouteToComponents_i a b c (snd (fromJust ml)) xcl)) else Nothing
+
+fitRouteToComponents :: [MovIns] -> [MovIns] -> [MovIns] -> [MovIns] -> Maybe [Char]
+fitRouteToComponents a b c r = fitRouteToComponents_i a b c r []
+
+
+miSize :: MovIns -> Int
+miSize (d, l) = if (l >=10) then 4 else 3
+
+estimateSize :: [MovIns] -> Int
+estimateSize r = (foldl1 (+) (map miSize r)) + ((length r) - 1)
+
+-- fitOne - Taking a and b as fixed, can we choose  c so as to describe the path r?
+fitOne_i :: [MovIns] -> [MovIns] -> [MovIns] -> [MovIns] -> Maybe [[MovIns]]
+fitOne_i (h:t) a b [] = fitOne_i t a b [h]
+fitOne_i (h:t) a b c = if ((estimateSize c) > 20) then Nothing else (if (isJust (fitRouteToComponents a b c (h:t) )) then (Just [a, b, c]) else (fitOne_i t a b (c ++ [h])))
+
+fitOne :: [MovIns] -> [MovIns] -> [MovIns] -> Maybe [[MovIns]]
+fitOne r a b = fitOne_i r a b [] 
+
+repeatedAB :: [MovIns] -> [MovIns] -> [MovIns] -> Maybe [[MovIns]]
+repeatedAB r a b = let sc = (\x -> (drop (length x) r))
+                   in if (firstElements a r) then (
+                        if (sc a == [])
+                        then Nothing
+                        else (repeatedAB (sc a) a b))
+                      else (
+                        if (firstElements b r)
+                        then (
+                          if (sc b == [])
+                          then Nothing
+                          else (repeatedAB (sc b) a b))
+                        else (fitOne r a b))
+
+-- fitTwo - Taking a as fixed, can we choose b and c so as to describe the path r?
+fitTwo_i :: [MovIns] -> [MovIns] -> [MovIns] -> Maybe [[MovIns]]
+fitTwo_i (h:t) a [] = fitTwo_i t a [h]
+fitTwo_i (h:t) a b = if ((estimateSize b) > 20) then Nothing else (if (isJust (repeatedAB (h:t) a b)) then (repeatedAB (h:t) a b) else (fitTwo_i t a (b ++ [h])))
+
+fitTwo :: [MovIns] -> [MovIns] -> Maybe [[MovIns]]
+fitTwo r a = fitTwo_i r a []
+
+repeatedA :: [MovIns] -> [MovIns] -> Maybe[[MovIns]]
+repeatedA r a = if (firstElements a r) then (if ((drop (length a) r) == []) then Nothing else (repeatedA (drop (length a) r) a)) else (fitTwo r a)
+
+fitThree_i :: [MovIns] -> [MovIns] -> Maybe [[MovIns]]
+fitThree_i (h:t) [] = fitThree_i t [h]
+fitThree_i (h:t) a = if ((estimateSize a) > 20) then Nothing else (if (isJust (repeatedA (h:t) a)) then (repeatedA (h:t) a) else (fitThree_i t (a ++ [h])))
+
+fitThree :: [MovIns] -> Maybe [[MovIns]]
+fitThree r = fitThree_i r []
+
+partOne :: MachineState -> String
+partOne m = let s = (linesToSet (cutIntoLines (mOutput (stepUntilTermination m))))
+            in show (foldl1 (\x y -> x + y) (map (\(x,y) -> (x*y)) (intersections s)))
+
+commaList :: [String] -> String
+commaList [] = "\n"
+commaList (h:[]) = h ++ "\n"
+commaList (h:t) = h ++ "," ++ (commaList t)
+
+compToString :: [MovIns] -> String
+compToString mi = commaList (map (\x -> [(fst x)] ++ "," ++ (show (snd x))) mi)
+
+
+partTwo :: MachineState -> String
+partTwo m = let s = (linesToSet (cutIntoLines (mOutput (stepUntilTermination m))))
+                rt = (doRoute (robotLocation (cutIntoLines (mOutput (stepUntilTermination m)))) 0 s)
+                components = fromJust (fitThree rt)
+                frc = fitRouteToComponents (components !! 0) (components !! 1) (components !! 2) rt
+                ip = commaList (map (\x->[x]) (fromJust frc)) ++ compToString (components !! 0) ++ compToString (components !! 1) ++ compToString (components !! 2) ++ "n\n"
+            in (show (stepUntilTermination (mReplaceInput (map (\x-> fromIntegral (Char.ord x)) ip) (mReplaceMem m (mMemPrimWrite 2 0 (mMemory m))))))
+
 main = do
      fHand <- openFile "data/Day17.txt" ReadMode
      contents <- hGetContents fHand
      let input = [(read x :: Integer) | x <- (splitOn ","  contents)]
          m = (mListToMemory input, 0, [], [], 0)
          s = (linesToSet (cutIntoLines (mOutput (stepUntilTermination m))))
+         rt = (doRoute (robotLocation (cutIntoLines (mOutput (stepUntilTermination m)))) 0 s)
      putStrLn (foldl1 (\x y -> x ++ "\n" ++ y) [lineToString x | x <- (cutIntoLines (mOutput (stepUntilTermination m)))])
      print "Part 1"
-     print (foldl1 (\x y -> x + y) (map (\(x,y) -> (x*y)) (intersections s)))
+     print (partOne m)
      print "Part 2"
      print (robotLocation (cutIntoLines (mOutput (stepUntilTermination m))))
-     print (doRoute (robotLocation (cutIntoLines (mOutput (stepUntilTermination m)))) 0 s)
+     print rt
+     print (partTwo m)
+--     print (compToString ((fromJust (fitThree rt)) !! 0))
+--     print (commaList (map (\x -> [x]) (fromJust (fitRouteToComponents ((fromJust (fitThree rt)) !! 0) ((fromJust (fitThree rt)) !! 1) ((fromJust (fitThree rt)) !! 2) rt))))
+--     print (intercalate ',' (fitRouteToComponents ((fromJust (fitThree rt)) !! 0) ((fromJust (fitThree rt)) !! 1) ((fromJust (fitThree rt)) !! 2) rt))
+--     print (mGetOutput (stepUntilOutput (mReplaceMem m (mMemPrimWrite 2 0 m))))
      hClose fHand
+
+
